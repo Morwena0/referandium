@@ -95,9 +95,9 @@ export default async function Home() {
               </span>
               
               <h1 className="text-5xl md:text-7xl font-extrabold text-gray-900 tracking-tight mb-6 leading-tight">
-                Prescribe the Future <br />
+                Prescribe Sound Policies <br />
                 <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">
-                  & Shape Policies 🚀
+                  and Shape the Future 🚀
                 </span>
               </h1>
               
