@@ -29,12 +29,30 @@ function makeGraduationBuilder(result: { data: any; error: any }) {
   return builder
 }
 
+function makeAllTimeBuilder(result: { data: any; error: any }) {
+  const builder = {
+    select: vi.fn(() => builder),
+    eq: vi.fn(() => builder),
+    is: vi.fn(() => builder),
+    order: vi.fn(() => builder),
+    limit: vi.fn(() => Promise.resolve(result)),
+    then: (resolve: any) => resolve(result),
+  }
+  return builder
+}
+
 describe('GET /api/leaderboard', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(supabaseAdmin.from).mockReturnValue(
       makeBuilder({ data: [], error: null }) as any
     )
+    // Default: momentum windows return empty so fallthrough tests control
+    // each call explicitly and other tests do not trip over extra RPC calls.
+    vi.mocked(supabaseAdmin.rpc).mockResolvedValue({
+      data: [],
+      error: null,
+    } as any)
   })
 
   it('returns phase 1 leaderboard with the verified three scores', async () => {
@@ -86,7 +104,9 @@ describe('GET /api/leaderboard', () => {
     expect(rpc).toHaveBeenCalledWith('startup_momentum', {
       p_phase: 1,
       p_limit: 20,
+      p_window: '24 hours',
     })
+    expect(body.window).toBe('24h')
   })
 
   it('rejects invalid phase', async () => {
@@ -95,6 +115,130 @@ describe('GET /api/leaderboard', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('phase')
+  })
+
+  it('rejects invalid window', async () => {
+    const req = new Request(
+      'http://localhost:3000/api/leaderboard?phase=1&window=1y'
+    )
+    const res = await getLeaderboard(req)
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toContain('window')
+  })
+
+  it('falls through to the next widest window when the selected one is empty', async () => {
+    const rpc = vi.mocked(supabaseAdmin.rpc)
+    // 24h empty, 7d has rows
+    rpc
+      .mockResolvedValueOnce({ data: [], error: null } as any)
+      .mockResolvedValueOnce({
+        data: [
+          {
+            startup_id: 'a',
+            slug: 'a',
+            name: 'A',
+            score: 100,
+            weighted: 100,
+            participants: 2,
+            events: 3,
+          },
+        ],
+        error: null,
+      } as any)
+
+    const req = new Request(
+      'http://localhost:3000/api/leaderboard?phase=1&window=24h'
+    )
+    const res = await getLeaderboard(req)
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.window).toBe('7d')
+    expect(body.leaderboard).toHaveLength(1)
+    expect(rpc).toHaveBeenNthCalledWith(1, 'startup_momentum', {
+      p_phase: 1,
+      p_limit: 20,
+      p_window: '24 hours',
+    })
+    expect(rpc).toHaveBeenNthCalledWith(2, 'startup_momentum', {
+      p_phase: 1,
+      p_limit: 20,
+      p_window: '7 days',
+    })
+  })
+
+  it('falls through to all-time raw totals when momentum windows are empty', async () => {
+    const rpc = vi.mocked(supabaseAdmin.rpc)
+    rpc
+      .mockResolvedValueOnce({ data: [], error: null } as any)
+      .mockResolvedValueOnce({ data: [], error: null } as any)
+
+    vi.mocked(supabaseAdmin.from).mockReturnValue(
+      makeAllTimeBuilder({
+        data: [
+          {
+            id: 's1',
+            slug: 's1',
+            name: 'S1',
+            total_yes_votes: 120,
+            total_no_votes: 20,
+          },
+          {
+            id: 's2',
+            slug: 's2',
+            name: 'S2',
+            total_yes_votes: 50,
+            total_no_votes: 0,
+          },
+        ],
+        error: null,
+      }) as any
+    )
+
+    const req = new Request(
+      'http://localhost:3000/api/leaderboard?phase=1&window=24h'
+    )
+    const res = await getLeaderboard(req)
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.window).toBe('all')
+    expect(body.leaderboard).toHaveLength(2)
+    expect(body.leaderboard[0].score).toBe(100) // net votes, not momentum
+    expect(body.leaderboard[1].score).toBe(50)
+  })
+
+  it('ranks phase 2 all-time by total raised without calling momentum', async () => {
+    vi.mocked(supabaseAdmin.from).mockReturnValue(
+      makeAllTimeBuilder({
+        data: [
+          {
+            startup_id: 'x',
+            pool_usdc: '9000.000000',
+            startup_startups: { id: 'x', name: 'X', slug: 'x' },
+          },
+          {
+            startup_id: 'y',
+            pool_usdc: '4000.000000',
+            startup_startups: { id: 'y', name: 'Y', slug: 'y' },
+          },
+        ],
+        error: null,
+      }) as any
+    )
+
+    const req = new Request(
+      'http://localhost:3000/api/leaderboard?phase=2&window=all'
+    )
+    const res = await getLeaderboard(req)
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.window).toBe('all')
+    expect(body.leaderboard[0].score).toBe(9000)
+    expect(body.leaderboard[1].score).toBe(4000)
+    expect(supabaseAdmin.rpc).not.toHaveBeenCalled()
   })
 
   it('returns closest-to-crossing for phase 1', async () => {

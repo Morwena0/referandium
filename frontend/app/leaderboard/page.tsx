@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { formatUsd, formatVoteCount } from '@/lib/format'
 
 type TabKey = 'voting' | 'raising' | 'completed'
+type WindowKey = '24h' | '7d' | 'all'
 
 type LeaderboardItem = {
   startup_id: string
@@ -35,6 +36,7 @@ type GraduatedItem = {
 
 type LeaderboardData = {
   phase: number
+  window?: WindowKey
   leaderboard: (LeaderboardItem | GraduatedItem)[]
   closestToCrossing?: ClosestToCrossingItem[]
 }
@@ -71,14 +73,26 @@ function formatGraduatedAt(iso: string): string {
   })
 }
 
+const WINDOWS: { key: WindowKey; label: string }[] = [
+  { key: '24h', label: '24h' },
+  { key: '7d', label: '7d' },
+  { key: 'all', label: 'All time' },
+]
+
+const windowHeading: Record<WindowKey, string> = {
+  '24h': 'Most active in the last 24 hours',
+  '7d': 'Most active in the last 7 days',
+  all: 'Ranked by total support',
+}
+
 const emptyCopy: Record<TabKey, { title: string; body: string }> = {
   voting: {
-    title: 'Nothing has moved in the last three days',
-    body: 'Check back when things pick up.',
+    title: 'No activity yet',
+    body: 'Startups will appear here once they receive votes.',
   },
   raising: {
-    title: 'Nothing has moved in the last three days',
-    body: 'Check back when things pick up.',
+    title: 'No activity yet',
+    body: 'Startups will appear here once they start raising.',
   },
   completed: {
     title: 'No graduations yet',
@@ -87,14 +101,15 @@ const emptyCopy: Record<TabKey, { title: string; body: string }> = {
 }
 
 const tabDescription: Record<TabKey, string> = {
-  voting: 'Voting leaderboard — startups ranked by what is moving right now.',
-  raising: 'Raising leaderboard — startups ranked by what is moving right now.',
+  voting: 'Voting leaderboard',
+  raising: 'Raising leaderboard',
   completed:
     'Completed token migrations, most recent first. No performance ranking is shown.',
 }
 
 export default function LeaderboardPage() {
   const [tab, setTab] = useState<TabKey>('voting')
+  const [window, setWindow] = useState<WindowKey>('24h')
   const [data, setData] = useState<LeaderboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -104,6 +119,11 @@ export default function LeaderboardPage() {
     [tab]
   )
 
+  // The highlighted window is the one the server actually returned — when a
+  // narrow window is empty the API falls through to a wider one and reports
+  // it, so the selector always reflects what is on screen.
+  const activeWindow: WindowKey = data?.window ?? window
+
   useEffect(() => {
     let cancelled = false
 
@@ -112,7 +132,9 @@ export default function LeaderboardPage() {
       setError(null)
 
       try {
-        const res = await fetch(`/api/leaderboard?phase=${phase}`)
+        const res = await fetch(
+          `/api/leaderboard?phase=${phase}&window=${window}`
+        )
         const json = await res.json()
         if (!res.ok) {
           throw new Error(json.error || `Failed to load leaderboard (${res.status})`)
@@ -136,7 +158,7 @@ export default function LeaderboardPage() {
     return () => {
       cancelled = true
     }
-  }, [phase])
+  }, [phase, window])
 
   return (
     <div className="min-h-screen bg-[#F9FAFB] px-4 py-10 text-[#111827] sm:py-14">
@@ -146,7 +168,9 @@ export default function LeaderboardPage() {
             Leaderboard
           </h1>
           <p className="mx-auto max-w-2xl text-base leading-relaxed text-[#6B7280] sm:text-lg">
-            {tabDescription[tab]}
+            {phase === 3
+              ? tabDescription[tab]
+              : `${tabDescription[tab]} — ${windowHeading[activeWindow]}.`}
           </p>
         </div>
 
@@ -156,7 +180,7 @@ export default function LeaderboardPage() {
           </div>
         )}
 
-        <div className="mb-8 flex flex-wrap gap-2 sm:mb-10">
+        <div className="mb-8 flex flex-wrap items-center gap-2 sm:mb-10">
           {TABS.map(({ key, label }) => (
             <button
               key={key}
@@ -171,6 +195,25 @@ export default function LeaderboardPage() {
               {label}
             </button>
           ))}
+
+          {phase !== 3 && (
+            <div className="ml-auto flex items-center gap-1 rounded-full border border-[#E5E7EB] bg-white p-1">
+              {WINDOWS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setWindow(key)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    activeWindow === key
+                      ? 'bg-[#3B82F6] text-white'
+                      : 'text-[#6B7280] hover:text-[#111827]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -241,9 +284,11 @@ export default function LeaderboardPage() {
                     </div>
                     <div>
                       <p className="font-semibold text-[#111827]">{row.name}</p>
-                      <p className="text-xs text-[#6B7280]">
-                        {formatVoteCount(row.events)} events
-                      </p>
+                      {activeWindow !== 'all' && (
+                        <p className="text-xs text-[#6B7280]">
+                          {formatVoteCount(row.events)} events
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="text-right">
@@ -251,7 +296,11 @@ export default function LeaderboardPage() {
                       {formatScore(phase, row.score)}
                     </p>
                     <p className="text-xs text-[#6B7280]">
-                      {formatVoteCount(row.participants)} participants
+                      {activeWindow === 'all'
+                        ? phase === 1
+                          ? 'net votes'
+                          : 'total raised'
+                        : `${formatVoteCount(row.participants)} participants`}
                     </p>
                   </div>
                 </Link>

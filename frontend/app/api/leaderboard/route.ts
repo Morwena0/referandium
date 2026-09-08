@@ -28,10 +28,118 @@ export type ClosestToCrossingItem = {
   progress: number
 }
 
+export type WindowKey = '24h' | '7d' | 'all'
+
+const WINDOW_ORDER: WindowKey[] = ['24h', '7d', 'all']
+
+const WINDOW_INTERVALS: Record<Exclude<WindowKey, 'all'>, string> = {
+  '24h': '24 hours',
+  '7d': '7 days',
+}
+
+async function fetchMomentumWindow(
+  phase: number,
+  window: Exclude<WindowKey, 'all'>,
+  limit: number
+): Promise<{ rows: LeaderboardItem[] | null; error: any }> {
+  const { data: rows, error } = await (supabaseAdmin as any).rpc(
+    'startup_momentum',
+    {
+      p_phase: phase,
+      p_limit: limit,
+      p_window: WINDOW_INTERVALS[window],
+    }
+  )
+
+  if (error) {
+    return { rows: null, error }
+  }
+
+  return {
+    rows: (rows ?? []).map((r: any) => ({
+      startup_id: String(r.startup_id ?? ''),
+      slug: String(r.slug ?? ''),
+      name: String(r.name ?? ''),
+      score: Number(r.score ?? 0),
+      weighted: Number(r.weighted ?? 0),
+      participants: Number(r.participants ?? 0),
+      events: Number(r.events ?? 0),
+    })),
+    error: null,
+  }
+}
+
+async function fetchAllTimeLeaderboard(
+  phase: number,
+  limit: number
+): Promise<{ rows: LeaderboardItem[] | null; error: any }> {
+  if (phase === 1) {
+    const { data, error } = await supabaseAdmin
+      .from('startup_startups')
+      .select('id, slug, name, total_yes_votes, total_no_votes')
+      .eq('phase', 1)
+      .is('deleted_at', null)
+
+    if (error) {
+      return { rows: null, error }
+    }
+
+    const rows: LeaderboardItem[] = (data ?? [])
+      .map((s: any) => {
+        const net =
+          Number(s.total_yes_votes ?? 0) - Number(s.total_no_votes ?? 0)
+        return {
+          startup_id: String(s.id ?? ''),
+          slug: String(s.slug ?? ''),
+          name: String(s.name ?? ''),
+          score: net,
+          weighted: net,
+          participants: 0,
+          events: 0,
+        }
+      })
+      .filter((r) => r.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+
+    return { rows, error: null }
+  }
+
+  const { data, error } = await (supabaseAdmin as any)
+    .from('startup_curve_state')
+    .select(
+      'startup_id, pool_usdc::text, startup_startups!inner(id, name, slug, phase, deleted_at)'
+    )
+    .eq('startup_startups.phase', 2)
+    .is('startup_startups.deleted_at', null)
+    .order('pool_usdc', { ascending: false })
+    .limit(limit)
+
+  if (error) {
+    return { rows: null, error }
+  }
+
+  const rows: LeaderboardItem[] = (data ?? []).map((r: any) => {
+    const raised = Number(r.pool_usdc ?? 0)
+    return {
+      startup_id: String(r.startup_id ?? ''),
+      slug: String(r.startup_startups?.slug ?? ''),
+      name: String(r.startup_startups?.name ?? ''),
+      score: raised,
+      weighted: raised,
+      participants: 0,
+      events: 0,
+    }
+  })
+
+  return { rows, error: null }
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const phaseParam = searchParams.get('phase') ?? '1'
   const limitParam = searchParams.get('limit') ?? '20'
+  const windowParam = searchParams.get('window') ?? '24h'
 
   const phase = Number(phaseParam)
   const limit = Number(limitParam)
@@ -39,6 +147,13 @@ export async function GET(request: Request) {
   if (![1, 2, 3].includes(phase)) {
     return NextResponse.json(
       { error: 'phase must be 1, 2, or 3' },
+      { status: 400 }
+    )
+  }
+
+  if (!WINDOW_ORDER.includes(windowParam as WindowKey)) {
+    return NextResponse.json(
+      { error: 'window must be 24h, 7d, or all' },
       { status: 400 }
     )
   }
@@ -80,31 +195,36 @@ export async function GET(request: Request) {
       return NextResponse.json({ phase, leaderboard })
     }
 
-    const { data: rows, error: rpcError } = await (supabaseAdmin as any).rpc(
-      'startup_momentum',
-      {
-        p_phase: phase,
-        p_limit: limit,
+    // Fall through to the next widest window when the selected one is
+    // empty, and report the window actually used so the client can show it.
+    let leaderboard: LeaderboardItem[] = []
+    let window: WindowKey = windowParam as WindowKey
+
+    const startIdx = WINDOW_ORDER.indexOf(window)
+    for (let i = startIdx; i < WINDOW_ORDER.length; i++) {
+      const w = WINDOW_ORDER[i]
+      const result =
+        w === 'all'
+          ? await fetchAllTimeLeaderboard(phase, limit)
+          : await fetchMomentumWindow(phase, w, limit)
+
+      if (result.error) {
+        console.error(
+          `[api/leaderboard] ${w === 'all' ? 'all-time query' : 'startup_momentum RPC'} error (window=${w}):`,
+          result.error
+        )
+        return NextResponse.json(
+          { error: 'Failed to load leaderboard.' },
+          { status: 500 }
+        )
       }
-    )
 
-    if (rpcError) {
-      console.error('[api/leaderboard] startup_momentum RPC error:', rpcError)
-      return NextResponse.json(
-        { error: 'Failed to load leaderboard.' },
-        { status: 500 }
-      )
+      leaderboard = result.rows ?? []
+      window = w
+      if (leaderboard.length > 0) {
+        break
+      }
     }
-
-    const leaderboard: LeaderboardItem[] = (rows ?? []).map((r: any) => ({
-      startup_id: String(r.startup_id ?? ''),
-      slug: String(r.slug ?? ''),
-      name: String(r.name ?? ''),
-      score: Number(r.score ?? 0),
-      weighted: Number(r.weighted ?? 0),
-      participants: Number(r.participants ?? 0),
-      events: Number(r.events ?? 0),
-    }))
 
     let closestToCrossing: ClosestToCrossingItem[] | undefined
     if (phase === 1) {
@@ -148,7 +268,7 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json({ phase, leaderboard, closestToCrossing })
+    return NextResponse.json({ phase, window, leaderboard, closestToCrossing })
   } catch (err: any) {
     console.error('[api/leaderboard] unexpected error:', err)
     return NextResponse.json(

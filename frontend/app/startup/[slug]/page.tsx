@@ -1081,9 +1081,13 @@ export default function StartupDetailPage() {
     const headers: Record<string, string> = {}
     if (authenticated) {
       const token = await getAccessToken()
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`
+      if (!token) {
+        // Privy still reports the session as authenticated but cannot mint a
+        // token — it has expired. Fail loudly here so the user sees why the
+        // action failed instead of an unexplained anonymous 401.
+        throw new Error('Your session has expired, please sign in again')
       }
+      headers['Authorization'] = `Bearer ${token}`
     }
     return headers
   }
