@@ -242,7 +242,7 @@ async function scanOneUser(
     .from('deposits')
     .select('*')
     .eq('user_id', user.id)
-    .in('status', ['detected', 'sweeping'])
+    .in('status', ['detected', 'sweeping', 'awaiting_consent'])
 
   if (depositsError) {
     throw new Error(`Failed to fetch deposits to sweep: ${depositsError.message}`)
@@ -291,29 +291,33 @@ async function scanOneUser(
   }
 
   for (const deposit of depositsToSweep) {
-    if (deposit.status === 'detected') {
+    if (deposit.status === 'detected' || deposit.status === 'awaiting_consent') {
       if (Number(deposit.amount_usdc) < MIN_SWEEP_USDC) {
-        console.log(`[scan-user-deposits] deposit ${deposit.id} below ${MIN_SWEEP_USDC} USDC, leaving detected`)
+        console.log(`[scan-user-deposits] deposit ${deposit.id} below ${MIN_SWEEP_USDC} USDC, leaving ${deposit.status}`)
         result.skipped++
         continue
       }
 
       if (!walletId) {
-        try {
-          const { error } = await supabaseAdmin.rpc('mark_deposit_awaiting_consent', { p_deposit_id: deposit.id })
-          if (error) throw error
+        if (deposit.status === 'awaiting_consent') {
           result.awaiting++
-        } catch (err: any) {
-          console.error(`[scan-user-deposits] mark_deposit_awaiting_consent failed for ${deposit.id}:`, err)
-          void recordSystemError({
-            source: 'swallowed',
-            name: 'ScanMarkDepositAwaitingConsentFailed',
-            message: err?.message ?? 'mark_deposit_awaiting_consent failed',
-            path: 'lib/scan-user-deposits.ts/scanOneUser',
-            userId: user.id,
-            context: { depositId: deposit.id, stack: err?.stack },
-          })
-          result.errors++
+        } else {
+          try {
+            const { error } = await supabaseAdmin.rpc('mark_deposit_awaiting_consent', { p_deposit_id: deposit.id })
+            if (error) throw error
+            result.awaiting++
+          } catch (err: any) {
+            console.error(`[scan-user-deposits] mark_deposit_awaiting_consent failed for ${deposit.id}:`, err)
+            void recordSystemError({
+              source: 'swallowed',
+              name: 'ScanMarkDepositAwaitingConsentFailed',
+              message: err?.message ?? 'mark_deposit_awaiting_consent failed',
+              path: 'lib/scan-user-deposits.ts/scanOneUser',
+              userId: user.id,
+              context: { depositId: deposit.id, stack: err?.stack },
+            })
+            result.errors++
+          }
         }
         continue
       }
