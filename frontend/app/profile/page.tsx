@@ -37,11 +37,6 @@ type PendingPack = {
   release_after: string
 }
 
-type DepositInfo = {
-  platform_address: string
-  usdc_mint: string
-}
-
 type VotePosition = {
   startup_id: string
   name: string
@@ -434,10 +429,6 @@ export default function ProfilePage() {
 
   const [devnetLoading, setDevnetLoading] = useState(false)
   const [devnetMessage, setDevnetMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
-  const [depositInfoLoading, setDepositInfoLoading] = useState(false)
-  const [depositInfoMessage, setDepositInfoMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
-  const [walletConfirmLoading, setWalletConfirmLoading] = useState(false)
-  const [walletConfirmMessage, setWalletConfirmMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
   const [cardLoading, setCardLoading] = useState(false)
   const [cardMessage, setCardMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
   const [copyError, setCopyError] = useState<string | null>(null)
@@ -452,8 +443,6 @@ export default function ProfilePage() {
 
   const [depositMode, setDepositMode] = useState<'devnet' | 'embedded' | 'card'>('devnet')
   const [depositAmount, setDepositAmount] = useState('')
-  const [depositInfo, setDepositInfo] = useState<DepositInfo | null>(null)
-  const [depositSig, setDepositSig] = useState('')
   const [withdrawAmount, setWithdrawAmount] = useState('')
   const [withdrawWallet, setWithdrawWallet] = useState('')
   const [withdrawLoading, setWithdrawLoading] = useState(false)
@@ -749,68 +738,6 @@ export default function ProfilePage() {
       setDevnetMessage({ type: 'error', text: err?.message || 'Deposit failed' })
     } finally {
       setDevnetLoading(false)
-    }
-  }
-
-  const loadDepositInfo = async () => {
-    setDepositInfoLoading(true)
-    setDepositInfoMessage(null)
-
-    try {
-      const res = await fetch('/api/deposit/wallet', { method: 'POST' })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setDepositInfoMessage({ type: 'error', text: json.error || 'Failed to load deposit info' })
-        return
-      }
-      setDepositInfo(json)
-      setDepositInfoMessage({ type: 'success', text: 'Deposit address loaded' })
-    } catch (err: any) {
-      setDepositInfoMessage({ type: 'error', text: err?.message || 'Failed to load deposit info' })
-    } finally {
-      setDepositInfoLoading(false)
-    }
-  }
-
-  const handleWalletDepositConfirm = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setWalletConfirmLoading(true)
-    setWalletConfirmMessage(null)
-
-    try {
-      const token = await getAccessToken()
-      if (!token) {
-        setWalletConfirmMessage({ type: 'error', text: 'Not authenticated' })
-        return
-      }
-
-      if (!depositSig.trim()) {
-        setWalletConfirmMessage({ type: 'error', text: 'Transaction signature is required' })
-        return
-      }
-
-      const res = await fetch('/api/deposit/wallet/confirm', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ signature: depositSig.trim() }),
-      })
-
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setWalletConfirmMessage({ type: 'error', text: json.error || 'Confirm failed' })
-        return
-      }
-
-      setWalletConfirmMessage({ type: 'success', text: `Credited ${json.credited_amount}. New balance: ${json.new_balance}` })
-      setDepositSig('')
-      fetchProfile()
-    } catch (err: any) {
-      setWalletConfirmMessage({ type: 'error', text: err?.message || 'Confirm failed' })
-    } finally {
-      setWalletConfirmLoading(false)
     }
   }
 
